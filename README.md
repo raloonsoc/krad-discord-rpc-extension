@@ -87,10 +87,44 @@ never turns idle, however long the agent runs.
 - Waiting agents win over working ones, because they need you.
 - When a single agent is active its harness appears in the small icon tooltip,
   e.g. `Claude Code working`; with several agents only the count is shown.
+- While the editor is not focused (for example in an agent chat) the small icon
+  becomes that agent's harness icon instead of the last file's language. See
+  [Agent icons](#agent-icons).
 
 Agents that belong to a group listed under **Ignored groups** do not count, and
 their names are never shown. If Krad ADE does not offer the `events` feature the
 extension logs a warning and keeps working without agent information.
+
+## Agent icons
+
+Krad ADE reports the agent activity but not which chat has the focus. The
+extension uses the active file as the proxy: when Krad ADE sends
+`active_file: None` the editor lost the focus, so the presence switches the
+small icon to the agent that most needs you. A waiting agent wins over a working
+one; between two in the same state, the most recently updated wins. Finished
+agents, idle time and agents in ignored groups never take the icon, which then
+falls back to the language of the last file.
+
+Harness names match case-insensitively.
+
+| Harness | Asset key | Name |
+| --- | --- | --- |
+| `Claude Code` (`ClaudeCode`) | `claude` | Claude Code |
+| `opencode` | `opencode` | opencode |
+| `Codex` | `agent` | Codex |
+| `Shell` | `shell` | Shell |
+| `ACP` with `gemini` in the id | `googlegemini` | Gemini |
+| `ACP` with `copilot` in the id | `githubcopilot` | Copilot |
+| `ACP` with `cursor` in the id | `cursor` | Cursor |
+| `ACP` with `mistral` in the id | `mistralai` | Mistral |
+| `ACP` with `ollama` in the id | `ollama` | Ollama |
+| `ACP` with `claude` in the id | `claude` | Claude |
+| `Gateway`, unknown harness or none | `agent` | Agent |
+
+An unknown `ACP` id falls back to `agent` and keeps its own id as the tooltip.
+The brand icons come from [Simple Icons](https://simpleicons.org), released
+under CC0; the brands themselves belong to their owners. `agent` is drawn for
+this extension.
 
 ## Settings
 

@@ -155,6 +155,13 @@ pub fn view(state: &State, settings: &Settings, now: SystemTime) -> Option<Prese
     let idle = !agents.active()
         && now.duration_since(state.last_activity).unwrap_or_default()
             >= Duration::from_secs(u64::from(settings.idle_minutes) * 60);
+    // Away from the editor, the most urgent agent owns the small icon: that is
+    // the one the user is probably talking to in a chat.
+    let chat_icon = if !state.editor_focused && settings.show_agents && !idle {
+        agents.primary.as_ref().map(agent_icon)
+    } else {
+        None
+    };
     let active_file = state
         .active_file
         .as_deref()
@@ -177,24 +184,40 @@ pub fn view(state: &State, settings: &Settings, now: SystemTime) -> Option<Prese
     } else {
         saved_or_idle(state, settings)
     };
-    let small_text = if settings.show_agents {
+    let small_text = if let Some((_, text)) = &chat_icon {
+        Some(text.clone())
+    } else if settings.show_agents {
         agents
             .single_harness_text()
             .or_else(|| icon.map(|(_, label)| label.to_owned()))
     } else {
         icon.map(|(_, label)| label.to_owned())
     };
+    let small_image = chat_icon
+        .map(|(asset, _)| icon_url(asset))
+        .or_else(|| icon.map(|(asset, _)| icon_url(asset)));
 
     Some(PresenceView {
         details: truncate(details),
         state: truncate(state_line),
         large_image: LARGE_IMAGE.to_owned(),
         large_text: truncate(large_text),
-        small_image: icon.map(|(asset, _)| icon_url(asset)),
+        small_image,
         small_text: small_text.map(truncate),
         buttons: buttons(state, settings),
         start_timestamp: unix_seconds(state.session_start),
     })
+}
+
+/// The small icon and tooltip for the agent the presence is following.
+fn agent_icon(agent: &AgentSnapshot) -> (&'static str, String) {
+    let (asset, name) = harness_icon(agent.harness.as_deref());
+    let doing = if agent.state == AgentState::WaitingInput {
+        "waiting for input"
+    } else {
+        "working"
+    };
+    (asset, format!("{name} {doing}"))
 }
 
 /// The last saved file fills the gap when no file is open, or plain idle.
@@ -274,6 +297,9 @@ struct AgentSummary {
     waiting: usize,
     /// Harness of the only active agent, when there is exactly one.
     only_harness: Option<String>,
+    /// The agent worth showing on its own: waiting beats working, then the
+    /// most recently updated. `None` while nothing is active.
+    primary: Option<AgentSnapshot>,
 }
 
 impl AgentSummary {
@@ -333,11 +359,31 @@ fn agent_summary(state: &State, settings: &Settings) -> AgentSummary {
             AgentState::WaitingInput => summary.waiting += 1,
         }
         harnesses.push(agent.harness.as_deref());
+        let replace = match &summary.primary {
+            Some(current) => more_urgent(agent, current),
+            None => true,
+        };
+        if replace {
+            summary.primary = Some(agent.clone());
+        }
     }
     if harnesses.len() == 1 {
         summary.only_harness = harnesses[0].map(str::to_owned);
     }
     summary
+}
+
+/// Waiting beats working; between two in the same state the freshest wins.
+fn more_urgent(candidate: &AgentSnapshot, current: &AgentSnapshot) -> bool {
+    (urgency(candidate.state), candidate.updated_at) > (urgency(current.state), current.updated_at)
+}
+
+fn urgency(state: AgentState) -> u8 {
+    match state {
+        AgentState::Idle => 0,
+        AgentState::Working => 1,
+        AgentState::WaitingInput => 2,
+    }
 }
 
 /// Whether the agent belongs to a group the user asked to ignore. The event
@@ -361,6 +407,60 @@ fn harness_label(harness: &str) -> &str {
         "Opencode" => "opencode",
         other => other.strip_prefix("Acp:").map_or(other, |_| "ACP agent"),
     }
+}
+
+/// Asset key and display name for a harness.
+///
+/// Matching ignores case, spaces, `-` and `_`, so `Claude Code`, `ClaudeCode`
+/// and `claude-code` share an icon. Brand icons come from Simple Icons;
+/// `agent` is the extension's own fallback.
+fn harness_icon(harness: Option<&str>) -> (&'static str, String) {
+    let Some(harness) = harness else {
+        return generic_agent_icon();
+    };
+    let normalized: String = harness
+        .chars()
+        .filter(|character| !character.is_whitespace() && *character != '-' && *character != '_')
+        .flat_map(char::to_lowercase)
+        .collect();
+    if let Some(id) = normalized.strip_prefix("acp:") {
+        return acp_icon(id, acp_id(harness));
+    }
+    match normalized.as_str() {
+        "claudecode" => ("claude", "Claude Code".to_owned()),
+        "opencode" => ("opencode", "opencode".to_owned()),
+        "codex" => ("agent", "Codex".to_owned()),
+        "shell" => ("shell", "Shell".to_owned()),
+        _ => generic_agent_icon(),
+    }
+}
+
+/// The id after `Acp:`, in its original spelling.
+fn acp_id(harness: &str) -> &str {
+    harness.split_once(':').map_or(harness, |(_, id)| id).trim()
+}
+
+/// Known ACP agents, matched by a substring of their id. An unknown id keeps
+/// its own name so a new agent is still identifiable.
+fn acp_icon(id: &str, original: &str) -> (&'static str, String) {
+    let brand = [
+        ("gemini", "googlegemini", "Gemini"),
+        ("copilot", "githubcopilot", "Copilot"),
+        ("cursor", "cursor", "Cursor"),
+        ("mistral", "mistralai", "Mistral"),
+        ("ollama", "ollama", "Ollama"),
+        ("claude", "claude", "Claude"),
+    ]
+    .into_iter()
+    .find(|(needle, _, _)| id.contains(needle));
+    brand.map_or_else(
+        || ("agent", original.to_owned()),
+        |(_, asset, name)| (asset, name.to_owned()),
+    )
+}
+
+fn generic_agent_icon() -> (&'static str, String) {
+    ("agent", "Agent".to_owned())
 }
 
 /// Discord rejects texts over 128 characters; cut on char boundaries and mark
@@ -414,6 +514,7 @@ mod tests {
             root: PathBuf::from("/code/api"),
         }];
         state.active_file = Some(PathBuf::from("/code/api/src/main.rs"));
+        state.editor_focused = true;
         state.cursor = Some(FilePosition {
             line: 42,
             column: 7,
@@ -775,10 +876,20 @@ mod tests {
     }
 
     fn agent(harness: Option<&str>, group: Option<&str>, state: AgentState) -> AgentSnapshot {
+        agent_at(harness, group, state, 0)
+    }
+
+    fn agent_at(
+        harness: Option<&str>,
+        group: Option<&str>,
+        state: AgentState,
+        seconds: u64,
+    ) -> AgentSnapshot {
         AgentSnapshot {
             harness: harness.map(str::to_owned),
             group: group.map(str::to_owned),
             state,
+            updated_at: at(seconds),
         }
     }
 
@@ -967,6 +1078,174 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_shows_the_agent_icon_instead_of_the_language() {
+        let mut state = state();
+        state.editor_focused = false;
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent(Some("ClaudeCode"), Some("1"), AgentState::Working),
+        );
+        let presence = view(&state, &Settings::default(), UNIX_EPOCH).expect("presence");
+        assert_eq!(presence.state, "main.rs · 1 agent working");
+        assert_eq!(presence.small_image, Some(icon_url("claude")));
+        assert_eq!(presence.small_text.as_deref(), Some("Claude Code working"));
+    }
+
+    #[test]
+    fn the_chat_icon_prefers_a_waiting_agent() {
+        let mut state = state();
+        state.editor_focused = false;
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent_at(Some("Codex"), Some("1"), AgentState::Working, 20),
+        );
+        state.agents.insert(
+            "t-2".to_owned(),
+            agent_at(Some("ClaudeCode"), Some("1"), AgentState::WaitingInput, 10),
+        );
+        let presence = view(&state, &Settings::default(), UNIX_EPOCH).expect("presence");
+        assert_eq!(
+            presence.small_image,
+            Some(icon_url("claude")),
+            "the agent that needs you owns the icon, even if it moved first"
+        );
+        assert_eq!(
+            presence.small_text.as_deref(),
+            Some("Claude Code waiting for input")
+        );
+    }
+
+    #[test]
+    fn between_equal_states_the_freshest_agent_wins() {
+        let mut state = state();
+        state.editor_focused = false;
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent_at(Some("Opencode"), Some("1"), AgentState::Working, 10),
+        );
+        state.agents.insert(
+            "t-2".to_owned(),
+            agent_at(Some("Codex"), Some("1"), AgentState::Working, 20),
+        );
+        let presence = view(&state, &Settings::default(), UNIX_EPOCH).expect("presence");
+        assert_eq!(presence.small_image, Some(icon_url("agent")));
+        assert_eq!(presence.small_text.as_deref(), Some("Codex working"));
+    }
+
+    #[test]
+    fn ignored_groups_never_own_the_chat_icon() {
+        let mut state = state();
+        state.editor_focused = false;
+        state.groups.push(GroupInfo {
+            id: "2".to_owned(),
+            name: "secret".to_owned(),
+            root: PathBuf::from("/code/secret"),
+        });
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent(Some("ClaudeCode"), Some("2"), AgentState::Working),
+        );
+        let settings = Settings {
+            ignored_groups: vec!["secret".to_owned()],
+            ..Settings::default()
+        };
+        let presence = view(&state, &settings, UNIX_EPOCH).expect("presence");
+        assert_eq!(presence.small_image, Some(icon_url("rust")));
+        assert_eq!(presence.small_text.as_deref(), Some("Rust"));
+    }
+
+    #[test]
+    fn idle_clears_the_chat_icon() {
+        let settings = Settings {
+            idle_minutes: 5,
+            ..Settings::default()
+        };
+        let mut state = state();
+        state.editor_focused = false;
+        state.last_activity = at(1_000);
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent_at(Some("ClaudeCode"), Some("1"), AgentState::Idle, 1_000),
+        );
+        let presence = view(&state, &settings, at(9_999)).expect("presence");
+        assert_eq!(presence.small_image, Some(icon_url(IDLE_IMAGE)));
+        assert_eq!(presence.small_text.as_deref(), Some(IDLE));
+    }
+
+    #[test]
+    fn show_agents_off_keeps_the_language_icon_in_a_chat() {
+        let mut state = state();
+        state.editor_focused = false;
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent(Some("ClaudeCode"), Some("1"), AgentState::Working),
+        );
+        let settings = Settings {
+            show_agents: false,
+            ..Settings::default()
+        };
+        let presence = view(&state, &settings, UNIX_EPOCH).expect("presence");
+        assert_eq!(presence.small_image, Some(icon_url("rust")));
+        assert_eq!(presence.small_text.as_deref(), Some("Rust"));
+    }
+
+    #[test]
+    fn a_chat_without_active_agents_keeps_the_language_icon() {
+        let mut state = state();
+        state.editor_focused = false;
+        state.agents.insert(
+            "t-1".to_owned(),
+            agent(Some("Codex"), Some("1"), AgentState::Idle),
+        );
+        let presence = view(&state, &Settings::default(), UNIX_EPOCH).expect("presence");
+        assert_eq!(presence.small_image, Some(icon_url("rust")));
+        assert_eq!(presence.small_text.as_deref(), Some("Rust"));
+    }
+
+    #[test]
+    fn harnesses_map_to_their_icon_and_name() {
+        let cases = [
+            (Some("Claude Code"), "claude", "Claude Code"),
+            (Some("ClaudeCode"), "claude", "Claude Code"),
+            (Some("claude-code"), "claude", "Claude Code"),
+            (Some("opencode"), "opencode", "opencode"),
+            (Some("OPENCODE"), "opencode", "opencode"),
+            (Some("Codex"), "agent", "Codex"),
+            (Some("Shell"), "shell", "Shell"),
+            (Some("Gateway"), "agent", "Agent"),
+            (Some("something-else"), "agent", "Agent"),
+            (None, "agent", "Agent"),
+        ];
+        for (harness, asset, name) in cases {
+            assert_eq!(
+                harness_icon(harness),
+                (asset, name.to_owned()),
+                "{harness:?} should map to {asset} ({name})"
+            );
+        }
+    }
+
+    #[test]
+    fn acp_harnesses_pick_a_brand_icon_and_keep_unknown_ids() {
+        let cases = [
+            ("Acp:gemini-cli", "googlegemini", "Gemini"),
+            ("Acp:github-copilot", "githubcopilot", "Copilot"),
+            ("acp:cursor-agent", "cursor", "Cursor"),
+            ("Acp:mistral-vibe", "mistralai", "Mistral"),
+            ("Acp:ollama", "ollama", "Ollama"),
+            ("Acp:claude-code", "claude", "Claude"),
+            ("Acp:MyAgent", "agent", "MyAgent"),
+        ];
+        for (harness, asset, name) in cases {
+            assert_eq!(
+                harness_icon(Some(harness)),
+                (asset, name.to_owned()),
+                "{harness} should map to {asset} ({name})"
+            );
+        }
+    }
+
+    #[test]
     fn without_a_file_the_counts_fill_the_line() {
         let mut state = state();
         state.active_file = None;
@@ -1034,6 +1313,22 @@ mod tests {
         let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/discord");
         let mut keys: Vec<&str> = LANGUAGES.iter().map(|(_, key, _)| *key).collect();
         keys.extend([FALLBACK_IMAGE, IDLE_IMAGE]);
+        let harnesses = [
+            None,
+            Some("Claude Code"),
+            Some("opencode"),
+            Some("Codex"),
+            Some("Shell"),
+            Some("Gateway"),
+            Some("Acp:gemini"),
+            Some("Acp:copilot"),
+            Some("Acp:cursor"),
+            Some("Acp:mistral"),
+            Some("Acp:ollama"),
+            Some("Acp:claude"),
+            Some("Acp:unknown"),
+        ];
+        keys.extend(harnesses.into_iter().map(|harness| harness_icon(harness).0));
         for key in keys {
             let path = folder.join(format!("{key}.png"));
             assert!(

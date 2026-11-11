@@ -31,6 +31,9 @@ pub struct AgentSnapshot {
     pub harness: Option<String>,
     pub group: Option<String>,
     pub state: AgentState,
+    /// When the state last changed, so presence can prefer the freshest agent
+    /// between two in the same state. Filled with the injected `now`.
+    pub updated_at: SystemTime,
 }
 
 /// Everything the presence needs, kept in one place.
@@ -41,6 +44,10 @@ pub struct State {
     pub environment: Option<EnvironmentInfo>,
     pub groups: Vec<GroupInfo>,
     pub active_file: Option<PathBuf>,
+    /// Whether the editor has the focus. Krad ADE sends `active_file: None`
+    /// when focus moves elsewhere, such as an agent chat; the last file stays
+    /// in [`Self::active_file`] so the presence does not flicker.
+    pub editor_focused: bool,
     /// Only known from the workspace context: no event carries the cursor.
     pub cursor: Option<FilePosition>,
     /// Last file Krad ADE reported as saved.
@@ -73,6 +80,7 @@ impl State {
             environment: None,
             groups: Vec::new(),
             active_file: None,
+            editor_focused: false,
             cursor: None,
             last_saved: None,
             branch: None,
@@ -92,6 +100,7 @@ impl State {
         self.environment = context.environment.clone();
         self.groups = context.groups.clone();
         self.active_file = context.active_file.clone();
+        self.editor_focused = context.active_file.is_some();
         self.cursor = context.cursor;
         self.last_activity = now;
     }
@@ -112,6 +121,7 @@ impl State {
                 {
                     self.environment = None;
                     self.active_file = None;
+                    self.editor_focused = false;
                     self.cursor = None;
                 }
             }
@@ -122,6 +132,7 @@ impl State {
                 // Krad sends `None` whenever focus leaves the editor (a
                 // terminal, another app). Keep the last file so the presence
                 // does not flicker to idle; the idle timeout retires it.
+                self.editor_focused = path.is_some();
                 if let Some(path) = path {
                     self.active_file = Some(path.clone());
                 }
@@ -150,14 +161,15 @@ impl State {
                         harness: harness.clone(),
                         group: params.group.clone(),
                         state: AgentState::Working,
+                        updated_at: now,
                     },
                 );
             }
             AppEvent::AgentWaiting { terminal } => {
-                self.agent(terminal, params).state = AgentState::WaitingInput;
+                self.agent(terminal, params, now).state = AgentState::WaitingInput;
             }
             AppEvent::AgentFinished { terminal } => {
-                self.agent(terminal, params).state = AgentState::Idle;
+                self.agent(terminal, params, now).state = AgentState::Idle;
             }
             // Sessions, Git and the rest only matter for the refresh triggers
             // in `main`: they are not agent activity.
@@ -168,14 +180,21 @@ impl State {
 
     /// The snapshot for `terminal`, created as idle if the start was missed.
     /// Keeps the harness and group already known for it.
-    fn agent(&mut self, terminal: &str, params: &AppEventParams) -> &mut AgentSnapshot {
+    fn agent(
+        &mut self,
+        terminal: &str,
+        params: &AppEventParams,
+        now: SystemTime,
+    ) -> &mut AgentSnapshot {
         let group = params.group.clone();
         self.agents
             .entry(terminal.to_owned())
+            .and_modify(|agent| agent.updated_at = now)
             .or_insert_with(|| AgentSnapshot {
                 harness: None,
                 group,
                 state: AgentState::Idle,
+                updated_at: now,
             })
     }
 
@@ -264,6 +283,7 @@ mod tests {
             Some(Path::new("/code/api/web/src/main.rs"))
         );
         assert_eq!(state.cursor.map(|cursor| cursor.line), Some(42));
+        assert!(state.editor_focused, "a file means the editor has focus");
         assert!(state.agents.is_empty());
         assert!(!state.paused);
         assert_eq!(state.session_start, SystemTime::UNIX_EPOCH);
@@ -286,6 +306,7 @@ mod tests {
             Some(Path::new("/code/api/lib.rs"))
         );
         assert_eq!(state.cursor, None, "a new file has an unknown cursor");
+        assert!(state.editor_focused);
         assert_eq!(state.last_activity, at(20));
 
         state.apply(
@@ -314,8 +335,42 @@ mod tests {
             state.active_file, before,
             "focus leaving keeps the last file"
         );
+        assert!(
+            !state.editor_focused,
+            "no active file means no editor focus"
+        );
         assert_eq!(state.cursor, None);
         assert_eq!(state.last_activity, at(50));
+    }
+
+    #[test]
+    fn editor_focus_follows_the_active_file_and_comes_back() {
+        let mut state = State::new(SystemTime::UNIX_EPOCH);
+        assert!(!state.editor_focused, "no context yet, no focus");
+
+        state.load(&context(), at(10));
+        assert!(state.editor_focused);
+
+        state.apply(&WorkspaceEvent::ActiveFileChanged { path: None }, at(20));
+        assert!(!state.editor_focused, "a chat or terminal took the focus");
+
+        state.apply(
+            &WorkspaceEvent::ActiveFileChanged {
+                path: Some(PathBuf::from("/code/api/lib.rs")),
+            },
+            at(30),
+        );
+        assert!(state.editor_focused, "back in the editor");
+    }
+
+    #[test]
+    fn a_context_without_a_file_means_no_editor_focus() {
+        let mut state = State::new(SystemTime::UNIX_EPOCH);
+        let mut context = context();
+        context.active_file = None;
+        context.cursor = None;
+        state.load(&context, at(10));
+        assert!(!state.editor_focused);
     }
 
     #[test]
@@ -340,6 +395,7 @@ mod tests {
         );
         assert_eq!(state.environment, None);
         assert_eq!(state.active_file, None);
+        assert!(!state.editor_focused);
         assert_eq!(state.cursor, None);
     }
 
@@ -442,6 +498,7 @@ mod tests {
                 harness: Some("ClaudeCode".to_owned()),
                 group: Some("2".to_owned()),
                 state: AgentState::Working,
+                updated_at: at(10),
             })
         );
         assert_eq!(state.last_activity, at(10), "agent events are activity");
@@ -465,6 +522,11 @@ mod tests {
             "waiting keeps what the start announced"
         );
         assert_eq!(state.last_activity, at(20));
+        assert_eq!(
+            state.agents.get("t-1").map(|agent| agent.updated_at),
+            Some(at(20)),
+            "every state change refreshes the timestamp"
+        );
     }
 
     #[test]
@@ -489,6 +551,7 @@ mod tests {
                 harness: Some("Codex".to_owned()),
                 group: Some("2".to_owned()),
                 state: AgentState::Idle,
+                updated_at: at(20),
             }),
             "finished agents stay, they are just not active"
         );
@@ -515,6 +578,7 @@ mod tests {
                 harness: None,
                 group: Some("2".to_owned()),
                 state: AgentState::Idle,
+                updated_at: at(20),
             })
         );
 
