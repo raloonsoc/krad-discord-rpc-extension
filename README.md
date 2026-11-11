@@ -32,18 +32,26 @@ Discord never shows your own Rich Presence buttons to you, only to the people wh
 | --- | --- |
 | Discord | The desktop app, running on the same machine as Krad ADE. The extension talks to its local IPC socket, so the web client does not work. |
 | Krad ADE | 0.4.0 or later (extension API `1.2`, app events for agents). |
-| OS | macOS on Apple Silicon (`darwin_arm64`). This is the only target `extension.toml` declares today. |
+| OS | macOS, Linux (x64 or arm64) or Windows (x64 or arm64). |
 | Rust | A stable Rust toolchain with Cargo, to build from source. |
 
 If Krad ADE does not announce app events, the extension keeps working without agent information and logs a warning.
 
 ## Installation
 
-### From GitHub
+### From GitHub (recommended)
 
-Not available yet. No releases are published, and `bin/` is git-ignored, so a fresh clone has no binary to run. Once releases exist, you will add the repository URL in Krad ADE, and it will download the binary for your platform from the latest release and check it against the SHA-256 in `extension.toml`.
+1. In Krad ADE, open the extension manager and add the repository URL:
 
-Until then, build from a local folder.
+   ```
+   https://github.com/raloonsoc/krad-discord-rpc-extension
+   ```
+
+2. Trust and enable **Discord RPC**.
+
+Krad ADE clones the default branch (`main`) into `~/.config/krad-ade/extensions/discord-rpc`. On first start it downloads the binary for your platform from the latest GitHub Release, checks it against the SHA-256 in `extension.toml`, and keeps it in its program cache. Nothing is built on your machine. **Update** in the extension manager pulls `main` and asks for trust again.
+
+Binaries exist for `darwin_arm64`, `darwin_x64`, `linux_x64`, `linux_arm64`, `win_x64` and `win_arm64`; they are published with the first version tag. Until then `extension.toml` points at the local `bin/` paths and installing from GitHub cannot work, so build from a local folder instead.
 
 ### From a local folder (development)
 
@@ -52,14 +60,22 @@ Until then, build from a local folder.
    ```sh
    git clone https://github.com/raloonsoc/krad-discord-rpc-extension
    cd krad-discord-rpc-extension
-   scripts/install.sh
+   scripts/install.sh          # macOS or Linux, this machine's architecture
+   scripts/install.sh all      # ...or both arm64 and x64
    ```
 
-   `install.sh` builds in release mode, copies the binary to `bin/krad-discord-rpc-darwin-arm64`, and verifies its signature. It refuses to run on anything but macOS arm64. The file is replaced through a temporary copy so the installed binary gets a new inode: overwriting a binary that Krad ADE is running makes macOS kill the new one with *Code Signature Invalid*.
+   On Windows, use PowerShell instead:
+
+   ```powershell
+   scripts\install.ps1              # this machine's architecture
+   scripts\install.ps1 -Arch x64    # ...or a specific one
+   ```
+
+   The script builds in release mode, copies the binary to `bin/krad-discord-rpc-<os>-<arch>`, and on macOS verifies its signature. Building the other architecture needs its Rust target first, e.g. `rustup target add x86_64-apple-darwin`. `binaries.py local` then points `extension.toml` at the files in `bin/`; do not commit that change after a release. The file is replaced through a temporary copy so the installed binary gets a new inode: overwriting one that Krad ADE is running makes macOS kill the new process with *Code Signature Invalid*.
 
 2. In Krad ADE, open the extension manager, add the project folder, then trust and enable **Discord RPC**.
 
-3. After rebuilding, run `scripts/install.sh` again and reload the extension in Krad ADE.
+3. After rebuilding, run the install script again and reload the extension in Krad ADE.
 
 Build output goes to `../krad-discord-rpc-extension-target`, not to `target/` inside the folder: Krad ADE refuses extension folders over 256 MB and fingerprints every file to decide trust.
 
@@ -214,10 +230,13 @@ The brand icons come from [Simple Icons](https://simpleicons.org), released unde
 ```sh
 cargo test
 cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 scripts/install.sh
 ```
 
-Reload the extension in Krad ADE after installing.
+Reload the extension in Krad ADE after installing. CI (`.github/workflows/ci.yml`) runs the format check, clippy and the tests on macOS, Ubuntu and Windows for every push and pull request to `main`.
+
+`krad-extension-sdk` comes from the Git commit pinned in `Cargo.toml`, so a build needs a Git client; the CI runners have one.
 
 ### How it is organised
 
@@ -252,7 +271,34 @@ src/
 Each module keeps its tests in a sibling `tests.rs` when they outgrow the file.
 `krad-extension-sdk` is pinned to the Git commit `9c0812c` (release 0.4.0) because the 0.4.0 crate on crates.io predates the app event API. Switch back to the crates.io version in `Cargo.toml` once a release includes it.
 
-There is no release workflow yet. `extension.toml` points at `bin/krad-discord-rpc-darwin-arm64`, which is git-ignored, so publishing needs per-platform binaries plus their `url` and `sha256` entries.
+### Releasing
+
+1. Bump `version` in `Cargo.toml`, refresh the lock file and commit the bump on `main`:
+
+   ```sh
+   cargo check
+   git commit -am "Bump version to 0.2.0"
+   ```
+
+2. Tag that commit and push the tag:
+
+   ```sh
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+   Pushing a `v*` tag publishes the release for real.
+
+3. The **Release** workflow (`.github/workflows/release.yml`) then tests and builds `darwin_arm64`, `darwin_x64`, `linux_x64`, `linux_arm64`, `win_x64` and `win_arm64` on GitHub-hosted runners, creates the GitHub Release with `krad-discord-rpc-<os>-<arch>[.exe]` assets, and rewrites the binaries block and `version` in `extension.toml` with `scripts/binaries.py release` before pushing that commit to `main`. The two cross-compiled targets (`darwin_x64`, `win_arm64`) only build.
+
+To redo the manifest step by hand, put the binaries in `dist/` under those names and run:
+
+```sh
+python3 scripts/binaries.py release 0.2.0 dist   # url + sha256 for tag v0.2.0
+python3 scripts/binaries.py local                # back to bin/ for development
+```
+
+`scripts/binaries.py` only touches the block between the `BEGIN BINARIES` and `END BINARIES` markers and the top-level `version` line.
 
 ## License
 

@@ -1,0 +1,44 @@
+# Checks every push and pull request to main on the three platforms Krad ADE
+# runs on: formatting, lints and tests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # .cargo/config.toml builds outside the project for local use; CI builds in place.
+  CARGO_TARGET_DIR: target
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SDK comes from Git (Cargo.toml), so the job needs a Git client;
+      # every GitHub-hosted runner has one.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

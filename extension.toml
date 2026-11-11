@@ -8,9 +8,31 @@ activation = ["startup"]
 [program]
 placement = "app"
 
+# BEGIN BINARIES (local builds; run scripts/binaries.py to change)
 [[program.binary]]
 targets = ["darwin_arm64"]
 path = "bin/krad-discord-rpc-darwin-arm64"
+
+[[program.binary]]
+targets = ["darwin_x64"]
+path = "bin/krad-discord-rpc-darwin-x64"
+
+[[program.binary]]
+targets = ["linux_x64"]
+path = "bin/krad-discord-rpc-linux-x64"
+
+[[program.binary]]
+targets = ["linux_arm64"]
+path = "bin/krad-discord-rpc-linux-arm64"
+
+[[program.binary]]
+targets = ["win_x64"]
+path = "bin/krad-discord-rpc-win-x64.exe"
+
+[[program.binary]]
+targets = ["win_arm64"]
+path = "bin/krad-discord-rpc-win-arm64.exe"
+# END BINARIES
 
 [[contributes.command]]
 id = "toggle"
