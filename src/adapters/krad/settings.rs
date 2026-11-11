@@ -1,51 +1,7 @@
-//! The settings the extension contributes, read from the app.
+//! Reads the host's `SettingsValues` into the domain [`Settings`].
 
+use crate::domain::settings::Settings;
 use krad_extension_sdk::api::protocol::{SettingValue, SettingsValues};
-
-/// Application ID of the official "Krad ADE" Discord app. It is public, not a
-/// secret. The `client-id` setting overrides it; left empty, this one is used.
-pub const DEFAULT_CLIENT_ID: &str = "1569775639412613150";
-
-/// Minutes without activity before the presence turns idle.
-pub const DEFAULT_IDLE_MINUTES: u32 = 5;
-pub const MIN_IDLE_MINUTES: u32 = 1;
-pub const MAX_IDLE_MINUTES: u32 = 120;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Settings {
-    pub client_id: String,
-    pub show_project: bool,
-    pub show_file: bool,
-    pub show_line: bool,
-    pub show_branch: bool,
-    /// Show what the coding agents are doing. Does not affect their ability to
-    /// keep the presence awake.
-    pub show_agents: bool,
-    pub idle_minutes: u32,
-    pub show_krad_button: bool,
-    pub show_repo_button: bool,
-    /// Lowercased, trimmed group names. Empty entries are dropped.
-    pub ignored_groups: Vec<String>,
-    pub enabled: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            client_id: DEFAULT_CLIENT_ID.to_owned(),
-            show_project: true,
-            show_file: true,
-            show_line: false,
-            show_branch: true,
-            show_agents: true,
-            idle_minutes: DEFAULT_IDLE_MINUTES,
-            show_krad_button: true,
-            show_repo_button: false,
-            ignored_groups: Vec::new(),
-            enabled: true,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
@@ -98,81 +54,38 @@ impl Key {
     }
 }
 
-impl Settings {
-    #[must_use]
-    pub fn from_values(values: &SettingsValues) -> Self {
-        let mut settings = Self::default();
-        for (name, value) in values {
-            if let Some(key) = Key::from_name(name.as_ref()) {
-                settings.apply(key, value);
-            }
-        }
-        settings
-    }
-
-    fn apply(&mut self, key: Key, value: &SettingValue) {
-        match (key, value) {
-            (Key::ClientId, SettingValue::Text(id)) => {
-                let id = id.trim();
-                id.clone_into(&mut self.client_id);
-                if id.is_empty() {
-                    DEFAULT_CLIENT_ID.clone_into(&mut self.client_id);
-                }
-            }
-            (Key::ShowProject, SettingValue::Toggle(show)) => self.show_project = *show,
-            (Key::ShowFile, SettingValue::Toggle(show)) => self.show_file = *show,
-            (Key::ShowLine, SettingValue::Toggle(show)) => self.show_line = *show,
-            (Key::ShowBranch, SettingValue::Toggle(show)) => self.show_branch = *show,
-            (Key::ShowAgents, SettingValue::Toggle(show)) => self.show_agents = *show,
-            (Key::IdleMinutes, SettingValue::Number(minutes)) => {
-                self.idle_minutes = clamp_idle_minutes(*minutes);
-            }
-            (Key::ShowKradButton, SettingValue::Toggle(show)) => self.show_krad_button = *show,
-            (Key::ShowRepoButton, SettingValue::Toggle(show)) => self.show_repo_button = *show,
-            (Key::IgnoredGroups, SettingValue::Text(names)) => {
-                self.ignored_groups = parse_ignored_groups(names);
-            }
-            (Key::Enabled, SettingValue::Toggle(enabled)) => self.enabled = *enabled,
-            _ => {}
+#[must_use]
+pub(crate) fn settings_from_values(values: &SettingsValues) -> Settings {
+    let mut settings = Settings::default();
+    for (name, value) in values {
+        if let Some(key) = Key::from_name(name.as_ref()) {
+            apply(&mut settings, key, value);
         }
     }
-
-    /// Whether the presence must stay hidden for this group.
-    #[must_use]
-    pub fn is_group_ignored(&self, name: &str) -> bool {
-        self.ignored_groups
-            .iter()
-            .any(|ignored| ignored.eq_ignore_ascii_case(name.trim()))
-    }
+    settings
 }
 
-/// Discord numbers arrive as `f64`; zero is not a valid idle timeout, so it
-/// (and any other out-of-range value) is clamped instead of disabling idle.
-fn clamp_idle_minutes(minutes: f64) -> u32 {
-    if !minutes.is_finite() {
-        return DEFAULT_IDLE_MINUTES;
+fn apply(settings: &mut Settings, key: Key, value: &SettingValue) {
+    match (key, value) {
+        (Key::ClientId, SettingValue::Text(id)) => settings.set_client_id(id),
+        (Key::ShowProject, SettingValue::Toggle(show)) => settings.show_project = *show,
+        (Key::ShowFile, SettingValue::Toggle(show)) => settings.show_file = *show,
+        (Key::ShowLine, SettingValue::Toggle(show)) => settings.show_line = *show,
+        (Key::ShowBranch, SettingValue::Toggle(show)) => settings.show_branch = *show,
+        (Key::ShowAgents, SettingValue::Toggle(show)) => settings.show_agents = *show,
+        (Key::IdleMinutes, SettingValue::Number(minutes)) => settings.set_idle_minutes(*minutes),
+        (Key::ShowKradButton, SettingValue::Toggle(show)) => settings.show_krad_button = *show,
+        (Key::ShowRepoButton, SettingValue::Toggle(show)) => settings.show_repo_button = *show,
+        (Key::IgnoredGroups, SettingValue::Text(names)) => settings.set_ignored_groups(names),
+        (Key::Enabled, SettingValue::Toggle(enabled)) => settings.enabled = *enabled,
+        _ => {}
     }
-    let minutes = minutes.round();
-    if minutes < f64::from(MIN_IDLE_MINUTES) {
-        MIN_IDLE_MINUTES
-    } else if minutes > f64::from(MAX_IDLE_MINUTES) {
-        MAX_IDLE_MINUTES
-    } else {
-        minutes as u32
-    }
-}
-
-fn parse_ignored_groups(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::settings::DEFAULT_CLIENT_ID;
     use krad_extension_sdk::api::SettingKey;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -189,7 +102,7 @@ mod tests {
     #[test]
     fn no_settings_keep_the_defaults() {
         assert_eq!(
-            Settings::from_values(&SettingsValues::new()),
+            settings_from_values(&SettingsValues::new()),
             Settings::default()
         );
         assert_eq!(Settings::default().client_id, DEFAULT_CLIENT_ID);
@@ -207,7 +120,7 @@ mod tests {
 
     #[test]
     fn settings_are_read_from_the_host_values() -> TestResult {
-        let settings = Settings::from_values(&values(&[
+        let settings = settings_from_values(&values(&[
             ("client-id", SettingValue::Text(" 1234567890 ".to_owned())),
             ("show-project", SettingValue::Toggle(false)),
             ("show-file", SettingValue::Toggle(false)),
@@ -239,7 +152,7 @@ mod tests {
 
     #[test]
     fn an_empty_client_id_falls_back_to_the_official_app() -> TestResult {
-        let settings = Settings::from_values(&values(&[(
+        let settings = settings_from_values(&values(&[(
             "client-id",
             SettingValue::Text("  ".to_owned()),
         )])?);
@@ -249,7 +162,7 @@ mod tests {
 
     #[test]
     fn ignored_groups_match_names_ignoring_case_and_spaces() -> TestResult {
-        let settings = Settings::from_values(&values(&[(
+        let settings = settings_from_values(&values(&[(
             "ignored-groups",
             SettingValue::Text("Client-A, API".to_owned()),
         )])?);
@@ -263,7 +176,7 @@ mod tests {
 
     #[test]
     fn mistyped_values_keep_the_defaults() -> TestResult {
-        let settings = Settings::from_values(&values(&[
+        let settings = settings_from_values(&values(&[
             ("client-id", SettingValue::Toggle(true)),
             ("show-project", SettingValue::Text("yes".to_owned())),
             ("show-file", SettingValue::Number(1.0)),
@@ -277,29 +190,5 @@ mod tests {
         ])?);
         assert_eq!(settings, Settings::default());
         Ok(())
-    }
-
-    #[test]
-    fn idle_minutes_are_clamped_into_a_sane_range() -> TestResult {
-        let cases = [
-            (0.0, 1),
-            (1.0, 1),
-            (5.4, 5),
-            (5.6, 6),
-            (120.0, 120),
-            (500.0, 120),
-        ];
-        for (input, expected) in cases {
-            let settings =
-                Settings::from_values(&values(&[("idle-minutes", SettingValue::Number(input))])?);
-            assert_eq!(settings.idle_minutes, expected, "{input}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn empty_ignored_groups_parse_to_nothing() {
-        assert!(parse_ignored_groups(" , ,, ").is_empty());
-        assert_eq!(parse_ignored_groups("a,B"), ["a", "b"]);
     }
 }
