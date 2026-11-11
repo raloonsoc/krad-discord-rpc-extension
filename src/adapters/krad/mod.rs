@@ -2,6 +2,7 @@
 
 mod convert;
 mod settings;
+pub(crate) mod titlebar;
 
 use crate::adapters::discord::DiscordHandle;
 use crate::app::Runtime;
@@ -48,7 +49,10 @@ pub(crate) fn build(handle: DiscordHandle) -> Result<Extension, HandlerError> {
 
     Ok(Extension::new()
         .with_request_timeout(Duration::from_secs(30))
-        .on_initialize(move |app, _params| start_loader(app, init_runtime.clone()))
+        .on_initialize(move |app, _params| {
+            init_runtime.attach(app);
+            start_loader(app, init_runtime.clone())
+        })
         .on_workspace_event(move |app, event| {
             event_runtime.apply(&workspace_event(&event));
             log(app, LogLevel::Debug, format!("workspace event: {event:?}"));
@@ -140,7 +144,8 @@ fn start_loader(app: &App, runtime: Runtime) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use krad_extension_sdk::api::manifest::ExtensionManifest;
+    use krad_extension_sdk::api::manifest::{ExtensionManifest, TitlebarAction, TitlebarSide};
+    use krad_extension_sdk::api::{ApiVersion, Icon};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -148,6 +153,8 @@ mod tests {
     fn the_manifest_is_valid_and_matches_the_handlers() -> TestResult {
         let manifest: ExtensionManifest = toml::from_str(include_str!("../../../extension.toml"))?;
         manifest.check()?;
+        // Titlebar items need 1.1; the app events and the rest need 1.2.
+        assert_eq!(manifest.api, ApiVersion::new(1, 2));
 
         let commands: Vec<&str> = manifest
             .contributes
@@ -156,6 +163,14 @@ mod tests {
             .map(|command| command.id.as_ref())
             .collect();
         assert_eq!(commands, [TOGGLE, RECONNECT]);
+
+        let items = &manifest.contributes.titlebar_items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.as_ref(), titlebar::TITLEBAR_ITEM);
+        assert_eq!(items[0].title, EXTENSION_NAME);
+        assert_eq!(items[0].side, TitlebarSide::Right);
+        assert_eq!(items[0].icon, Icon::Plug);
+        assert_eq!(items[0].action, TitlebarAction::Command(command(TOGGLE)?));
 
         let settings: Vec<&str> = manifest
             .contributes

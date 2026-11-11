@@ -1,6 +1,6 @@
 # Krad ADE · Discord RPC
 
-A [Krad ADE](https://github.com/joordih/krad-ade) extension that shows your workspace as Discord Rich Presence: the project and its Git branch, the active file with a language icon, how many coding agents are working or waiting, the elapsed session time, and up to two buttons. It updates on file, git and agent events, turns idle after a few quiet minutes, and can be paused from the command palette.
+A [Krad ADE](https://github.com/joordih/krad-ade) extension that shows your workspace as Discord Rich Presence: the project and its Git branch, the active file with a language icon, how many coding agents are working or waiting, the elapsed session time, and up to two buttons. It updates on file, git and agent events, turns idle after a few quiet minutes, and can be paused from the command palette or the titlebar button.
 
 Discord shows it like this:
 
@@ -23,6 +23,7 @@ Discord never shows your own Rich Presence buttons to you, only to the people wh
 - **Agent chat icon:** while the editor is not focused and an agent is active, the small icon becomes that agent's icon.
 - **Idle:** the presence turns `Idle` after the configured quiet minutes, but never while an agent is working or waiting.
 - **Buttons:** `Get Krad ADE` by default, and an optional `View repository` for the project's `origin`.
+- **Titlebar button:** a Discord RPC button that pauses and resumes, highlighted while the presence is shared.
 - **Privacy controls:** hide the project, hide the file, or ignore whole groups.
 
 ## Requirements
@@ -72,6 +73,8 @@ What the presence shows depends on where you are:
 - **Idle:** after `idle-minutes` without activity, and only while no agent is working or waiting, the state line becomes `Idle` and the icon changes. Any activity restores the presence at once.
 - **Paused:** the activity is cleared from Discord until you resume.
 
+The button next to the ADE/Editor switch mirrors the same switches: it stays highlighted and reads `Discord RPC: sharing` while the presence is shown, turns dim with `Discord RPC: paused` when paused or with `enabled` off, and reads `Discord RPC: Discord not running` while the extension cannot reach the Discord IPC socket. Clicking it runs the same pause/resume command.
+
 The session timer counts from when the extension started.
 
 ### Commands
@@ -80,7 +83,7 @@ Both live in the command palette:
 
 | Command | ID | Effect |
 | --- | --- | --- |
-| **Discord RPC: Pause / Resume** | `toggle` | Hides the presence immediately; restores it on resume. |
+| **Discord RPC: Pause / Resume** | `toggle` | Hides the presence immediately; restores it on resume. Bound to the titlebar button. |
 | **Discord RPC: Reconnect** | `reconnect` | Drops the Discord IPC connection and retries right away, useful after restarting Discord. |
 
 Reconnection also happens on its own: the extension retries with exponential backoff from 2 seconds up to 60 seconds while Discord is closed, and clears the activity when paused or when the extension exits.
@@ -228,6 +231,7 @@ src/
     workspace/                workspace state and how events change it
     agents.rs                 agent snapshots, counts and priority
     settings.rs               defaults and ranges, without the host types
+    indicator.rs              the titlebar button's highlight and tooltip
     presence/                 state + settings -> what Discord receives
       text.rs                 file and agent labels, UTF-8 truncation
       icons.rs                language and harness asset catalogue
@@ -236,6 +240,7 @@ src/
     krad/                     host SDK: hooks, settings, conversions
       convert.rs              SDK types -> domain types
       settings.rs             SettingsValues -> Settings
+      titlebar.rs             sends the button state to the host
     discord/                  thread that owns the Discord IPC client
       limiter.rs              debounce, rate window and reconnect backoff
       activity.rs             PresenceView -> Discord activity

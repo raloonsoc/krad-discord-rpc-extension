@@ -2,6 +2,7 @@
 
 pub(crate) mod agents;
 pub(crate) mod event;
+pub(crate) mod indicator;
 pub(crate) mod presence;
 pub(crate) mod settings;
 pub(crate) mod workspace;

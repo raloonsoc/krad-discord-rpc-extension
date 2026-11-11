@@ -9,11 +9,15 @@ use crate::domain::settings::Settings;
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use limiter::{Backoff, RateLimiter};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// How often the thread wakes to retry the throttle or a connection.
 const TICK: Duration = Duration::from_millis(250);
+
+/// Told whether the IPC client is connected, every time that changes.
+pub(crate) type ConnectionListener = Arc<dyn Fn(bool) + Send + Sync>;
 
 enum Command {
     Configure {
@@ -22,6 +26,8 @@ enum Command {
     /// `None` means clear the activity (paused, disabled, ignored group).
     Update(Option<PresenceView>),
     Reconnect,
+    /// Registers where connection changes go. Only one listener is kept.
+    Watch(ConnectionListener),
     Shutdown,
 }
 
@@ -47,6 +53,12 @@ impl DiscordHandle {
     /// Drops the connection and tries again right away.
     pub(crate) fn reconnect(&self) {
         self.send(Command::Reconnect);
+    }
+
+    /// Reports every change of the IPC connection to `listener`, so the
+    /// titlebar can say whether Discord is reachable.
+    pub(crate) fn watch_connection(&self, listener: ConnectionListener) {
+        self.send(Command::Watch(listener));
     }
 
     fn send(&self, command: Command) {
@@ -119,6 +131,10 @@ struct Worker {
     applied: Option<PresenceView>,
     limiter: RateLimiter,
     backoff: Backoff,
+    listener: Option<ConnectionListener>,
+    /// Last connection state told to the listener. `client` starts absent, so
+    /// an extension that never reaches Discord reports nothing new.
+    announced: bool,
 }
 
 impl Worker {
@@ -136,6 +152,7 @@ impl Worker {
                 self.applied = None;
                 self.backoff.reset();
             }
+            Command::Watch(listener) => self.listener = Some(listener),
             Command::Shutdown => {}
         }
     }
@@ -152,6 +169,12 @@ impl Worker {
     }
 
     fn tick(&mut self) {
+        self.pump();
+        self.announce(self.client.is_some());
+    }
+
+    /// Reconciles the connection and the activity with what the handlers want.
+    fn pump(&mut self) {
         let Some(client_id) = self.client_id.clone() else {
             return;
         };
@@ -234,5 +257,49 @@ impl Worker {
             let _ = client.close();
         }
         self.applied = None;
+    }
+
+    /// Calls the listener only when the connection state differs from the last
+    /// one announced.
+    fn announce(&mut self, connected: bool) {
+        if connected == self.announced {
+            return;
+        }
+        self.announced = connected;
+        if let Some(listener) = &self.listener {
+            listener(connected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn connection_changes_are_announced_once_each() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let mut worker = Worker {
+            listener: Some(Arc::new(move |connected| {
+                recorder.lock().expect("seen").push(connected);
+            })),
+            ..Worker::default()
+        };
+        // Still the initial state: a start without Discord says nothing.
+        worker.announce(false);
+        assert!(seen.lock().expect("seen").is_empty());
+        worker.announce(true);
+        worker.announce(true);
+        worker.announce(false);
+        assert_eq!(*seen.lock().expect("seen"), [true, false]);
+    }
+
+    #[test]
+    fn a_worker_without_a_listener_keeps_announcing_quietly() {
+        let mut worker = Worker::default();
+        worker.announce(true);
+        assert!(worker.announced);
     }
 }

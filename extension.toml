@@ -22,6 +22,15 @@ id = "reconnect"
 title = "Discord RPC: Reconnect"
 icon = "refresh"
 
+# Titlebar button next to the ADE/Editor switch: pause or resume, and show
+# whether the presence is being shared.
+[[contributes.titlebar_item]]
+id = "discord-rpc"
+title = "Discord RPC"
+icon = "plug"
+side = "right"
+command = "toggle"
+
 [[contributes.setting]]
 key = "client-id"
 title = "Discord Client ID"
