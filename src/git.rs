@@ -1,0 +1,360 @@
+//! Git facts for the active project, read without running `git`.
+//!
+//! Only the files Git itself would read are touched: `.git/HEAD` for the
+//! branch and `.git/config` for the `origin` remote. Worktrees and submodules
+//! keep `.git` as a `gitdir:` file, and worktrees store their config in the
+//! common directory, so both indirections are resolved here.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// What the presence needs to know about the active project's repository.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitInfo {
+    /// Current branch, or the short SHA when HEAD is detached.
+    pub branch: Option<String>,
+    /// `origin` remote converted to an `https` URL.
+    pub remote_url: Option<String>,
+}
+
+/// Reads [`GitInfo`] from the project root. `None` fields mean "not a repo"
+/// or "nothing readable", never an error.
+#[must_use]
+pub fn info(root: &Path) -> GitInfo {
+    let Some(git_dir) = git_dir(root) else {
+        return GitInfo::default();
+    };
+    GitInfo {
+        branch: branch(&git_dir),
+        remote_url: remote_url(&git_dir),
+    }
+}
+
+/// Resolves `<root>/.git`, which may be a directory or a `gitdir:` file
+/// pointing (relative or absolute) at the real git directory.
+fn git_dir(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    let metadata = fs::metadata(&dot_git).ok()?;
+    if metadata.is_dir() {
+        return Some(dot_git);
+    }
+    if !metadata.is_file() {
+        return None;
+    }
+    let contents = fs::read_to_string(&dot_git).ok()?;
+    let target = contents.lines().next()?.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let path = Path::new(target);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    })
+}
+
+/// `ref: refs/heads/<branch>` becomes the branch; anything else that looks
+/// like a commit id becomes its first seven characters (detached HEAD).
+fn branch(git_dir: &Path) -> Option<String> {
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref:") {
+        return reference
+            .trim()
+            .strip_prefix("refs/heads/")
+            .map(str::to_owned);
+    }
+    if head.is_empty() || !head.chars().all(|character| character.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(head.chars().take(7).collect())
+}
+
+/// Where the config lives. In a worktree the git directory is
+/// `.git/worktrees/<name>`, and `commondir` points at the shared `.git`.
+fn config_path(git_dir: &Path) -> PathBuf {
+    let Ok(common) = fs::read_to_string(git_dir.join("commondir")) else {
+        return git_dir.join("config");
+    };
+    let target = common.trim();
+    if target.is_empty() {
+        return git_dir.join("config");
+    }
+    let path = Path::new(target);
+    let base = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        git_dir.join(path)
+    };
+    base.join("config")
+}
+
+fn remote_url(git_dir: &Path) -> Option<String> {
+    let config = fs::read_to_string(config_path(git_dir)).ok()?;
+    https_url(origin_url(&config)?)
+}
+
+/// Reads the first `url` of the `[remote "origin"]` section.
+fn origin_url(config: &str) -> Option<&str> {
+    let mut in_origin = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_origin = is_origin_section(line);
+            continue;
+        }
+        if !in_origin {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("url") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn is_origin_section(line: &str) -> bool {
+    let Some(inner) = line
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let Some(rest) = inner.trim().strip_prefix("remote") else {
+        return false;
+    };
+    rest.trim() == "\"origin\""
+}
+
+/// Accepts `git@host:owner/repo(.git)`, `ssh://git@host/owner/repo(.git)` and
+/// already-`https` URLs. Anything else is rejected.
+fn https_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let converted = if let Some(rest) = url.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        format!("https://{host}/{}", path.trim_start_matches('/'))
+    } else if let Some(rest) = url.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        let host = host.split(':').next().unwrap_or(host);
+        format!("https://{host}/{path}")
+    } else if url.starts_with("https://") {
+        url.to_owned()
+    } else {
+        return None;
+    };
+    normalize_https(&converted)
+}
+
+fn normalize_https(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/')?;
+    // Never show embedded credentials in a button anybody can see.
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{path}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let unique = format!(
+                "krad-discord-rpc-{}-{}-{label}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let path = std::env::temp_dir().join(unique);
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("temp dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.0.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("parent dir");
+            }
+            fs::write(path, contents).expect("write file");
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_branch_head_resolves_to_the_branch_name() {
+        let dir = TempDir::new("branch");
+        dir.write(".git/HEAD", "ref: refs/heads/main\n");
+        assert_eq!(info(dir.path()).branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn branch_names_may_contain_slashes() {
+        let dir = TempDir::new("slashes");
+        dir.write(".git/HEAD", "ref: refs/heads/feature/discord\n");
+        assert_eq!(info(dir.path()).branch.as_deref(), Some("feature/discord"));
+    }
+
+    #[test]
+    fn a_detached_head_shows_the_short_sha() {
+        let dir = TempDir::new("detached");
+        dir.write(".git/HEAD", "0123456789abcdef0123456789abcdef01234567\n");
+        assert_eq!(info(dir.path()).branch.as_deref(), Some("0123456"));
+    }
+
+    #[test]
+    fn a_relative_gitdir_file_is_resolved_against_the_root() {
+        let dir = TempDir::new("relative-gitdir");
+        dir.write("project/.git", "gitdir: ../gitstore/worktrees/wt\n");
+        dir.write(
+            "gitstore/worktrees/wt/HEAD",
+            "ref: refs/heads/worktree-branch\n",
+        );
+        assert_eq!(
+            info(&dir.path().join("project")).branch.as_deref(),
+            Some("worktree-branch")
+        );
+    }
+
+    #[test]
+    fn an_absolute_gitdir_file_is_used_as_is() {
+        let dir = TempDir::new("absolute-gitdir");
+        let git_dir = dir.path().join("somewhere/else");
+        dir.write("somewhere/else/HEAD", "ref: refs/heads/absolute\n");
+        dir.write("project/.git", &format!("gitdir: {}\n", git_dir.display()));
+        assert_eq!(
+            info(&dir.path().join("project")).branch.as_deref(),
+            Some("absolute")
+        );
+    }
+
+    #[test]
+    fn without_a_repository_everything_is_empty() {
+        let dir = TempDir::new("no-repo");
+        assert_eq!(info(dir.path()), GitInfo::default());
+    }
+
+    #[test]
+    fn the_origin_remote_comes_from_the_config() {
+        let dir = TempDir::new("remote");
+        dir.write(".git/HEAD", "ref: refs/heads/main\n");
+        dir.write(
+            ".git/config",
+            "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = git@github.com:joordih/krad-ade.git\n",
+        );
+        let info = info(dir.path());
+        assert_eq!(
+            info.remote_url.as_deref(),
+            Some("https://github.com/joordih/krad-ade")
+        );
+    }
+
+    #[test]
+    fn a_worktree_reads_the_config_from_its_commondir() {
+        let dir = TempDir::new("worktree-config");
+        dir.write("project/.git", "gitdir: ../gitstore/worktrees/wt\n");
+        dir.write("gitstore/worktrees/wt/HEAD", "ref: refs/heads/feature\n");
+        dir.write("gitstore/worktrees/wt/commondir", "../..\n");
+        dir.write(
+            "gitstore/config",
+            "[remote \"origin\"]\n\turl = ssh://git@gitlab.com/owner/repo.git\n",
+        );
+        let info = info(&dir.path().join("project"));
+        assert_eq!(info.branch.as_deref(), Some("feature"));
+        assert_eq!(
+            info.remote_url.as_deref(),
+            Some("https://gitlab.com/owner/repo")
+        );
+    }
+
+    #[test]
+    fn remote_urls_are_converted_to_https() {
+        let cases = [
+            (
+                "git@github.com:owner/repo.git",
+                Some("https://github.com/owner/repo"),
+            ),
+            (
+                "git@github.com:owner/repo",
+                Some("https://github.com/owner/repo"),
+            ),
+            (
+                "ssh://git@github.com/owner/repo.git",
+                Some("https://github.com/owner/repo"),
+            ),
+            (
+                "ssh://git@github.com:2222/owner/repo",
+                Some("https://github.com/owner/repo"),
+            ),
+            (
+                "https://github.com/owner/repo.git",
+                Some("https://github.com/owner/repo"),
+            ),
+            (
+                "https://github.com/owner/repo",
+                Some("https://github.com/owner/repo"),
+            ),
+            (
+                "https://user:token@github.com/owner/repo",
+                Some("https://github.com/owner/repo"),
+            ),
+            ("http://github.com/owner/repo", None),
+            ("git://github.com/owner/repo", None),
+            ("file:///tmp/repo", None),
+            ("https://github.com", None),
+            ("", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(https_url(input).as_deref(), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn parsing_the_config_only_uses_the_origin_section() {
+        let config = "\
+[remote \"upstream\"]\n\turl = git@github.com:upstream/repo.git\n\
+[remote \"origin\"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\
+\turl = ssh://git@github.com:owner/repo.git\n\
+[remote \"other\"]\n\turl = git@github.com:other/repo.git\n";
+        assert_eq!(
+            origin_url(config),
+            Some("ssh://git@github.com:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn a_trailing_git_and_slashes_are_removed() {
+        assert_eq!(
+            https_url("git@github.com:owner/repo.git/").as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+    }
+}

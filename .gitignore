@@ -1,0 +1,9 @@
+# Rust build output (normally outside the folder, see .cargo/config.toml)
+/target/
+
+# Release binaries: built locally from source (see scripts/install.sh)
+/bin/*
+!/bin/.gitkeep
+
+# macOS
+.DS_Store

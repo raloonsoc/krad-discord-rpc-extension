@@ -1,0 +1,22 @@
+[package]
+name = "krad-discord-rpc-extension"
+version = "0.1.0"
+edition = "2021"
+description = "Krad ADE extension that shows the workspace activity in Discord"
+license = "MIT"
+publish = false
+
+[dependencies]
+discord-rich-presence = "1.1"
+# Pinned to the commit that adds the app event API (`events/subscribe`): the
+# 0.4.0 crate on crates.io predates it and fails when Krad ADE announces the
+# `events` feature. Go back to the crates.io version once it is published.
+krad-extension-sdk = { git = "https://github.com/joordih/krad-ade", rev = "9c0812c09aa238615015d0c7a240afc22f0607e5" }
+serde_json = "1"
+
+[dev-dependencies]
+toml = "1"
+
+[[bin]]
+name = "krad-discord-rpc"
+path = "src/main.rs"

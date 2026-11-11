@@ -1,0 +1,102 @@
+id = "discord-rpc"
+name = "Discord RPC"
+version = "0.1.0"
+description = "Shows the Krad ADE workspace and the active project and file as Discord Rich Presence"
+api = "1.2"
+activation = ["startup"]
+
+[program]
+placement = "app"
+
+[[program.binary]]
+targets = ["darwin_arm64"]
+path = "bin/krad-discord-rpc-darwin-arm64"
+
+[[contributes.command]]
+id = "toggle"
+title = "Discord RPC: Pause / Resume"
+icon = "stop"
+
+[[contributes.command]]
+id = "reconnect"
+title = "Discord RPC: Reconnect"
+icon = "refresh"
+
+[[contributes.setting]]
+key = "client-id"
+title = "Discord Client ID"
+description = "Optional. Application ID of your own Discord app (Developer Portal -> Applications -> General Information). Leave empty to use the official Krad ADE app."
+type = "text"
+default = ""
+
+[[contributes.setting]]
+key = "show-project"
+title = "Show the project"
+description = "Show the name of the workspace group (project) that holds the active file."
+type = "toggle"
+default = true
+
+[[contributes.setting]]
+key = "show-file"
+title = "Show the active file"
+description = "Show the name of the active file, and the last saved one when no file is open."
+type = "toggle"
+default = true
+
+[[contributes.setting]]
+key = "show-line"
+title = "Show the cursor line"
+description = "Append the cursor line to the active file name. Needs Show the active file."
+type = "toggle"
+default = false
+
+[[contributes.setting]]
+key = "show-branch"
+title = "Show the Git branch"
+description = "Append the current Git branch to the project name, e.g. \"krad-discord-rpc · main\". Hidden when Show the project is off."
+type = "toggle"
+default = true
+
+[[contributes.setting]]
+key = "show-agents"
+title = "Show the coding agents"
+description = "Show how many coding agents are working or waiting for input, e.g. \"main.rs · 2 agents working\". The harness name only appears when a single agent is active. Agents keep the presence awake regardless of this setting."
+type = "toggle"
+default = true
+
+[[contributes.setting]]
+key = "idle-minutes"
+title = "Idle after (minutes)"
+description = "Minutes without file activity, commands or a fresh workspace before the presence says Idle. Between 1 and 120."
+type = "number"
+default = 5
+min = 1
+max = 120
+
+[[contributes.setting]]
+key = "show-krad-button"
+title = "Show the Krad ADE button"
+description = "Add a \"Get Krad ADE\" button linking to the Krad ADE repository."
+type = "toggle"
+default = true
+
+[[contributes.setting]]
+key = "show-repo-button"
+title = "Show the repository button"
+description = "Add a \"View repository\" button linking to the active project's origin remote (only https URLs). Off by default, since the repository may be private. Hidden when Show the project is off."
+type = "toggle"
+default = false
+
+[[contributes.setting]]
+key = "ignored-groups"
+title = "Ignored groups"
+description = "Comma-separated workspace group (project) names that hide Rich Presence completely, e.g. \"client-a, secret\"."
+type = "text"
+default = ""
+
+[[contributes.setting]]
+key = "enabled"
+title = "Enabled"
+description = "Show Rich Presence. Turning it off clears it until you turn it back on."
+type = "toggle"
+default = true
