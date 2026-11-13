@@ -1,6 +1,6 @@
 [package]
 name = "krad-discord-rpc-extension"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Krad ADE extension that shows the workspace activity in Discord"
 license = "MIT"
