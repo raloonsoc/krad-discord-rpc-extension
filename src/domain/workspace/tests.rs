@@ -50,6 +50,11 @@ fn the_context_fills_every_workspace_field() {
         Some(Path::new("/code/api/web/src/main.rs"))
     );
     assert_eq!(state.cursor.map(|cursor| cursor.line), Some(42));
+    assert_eq!(
+        state.current_group.as_deref(),
+        Some("2"),
+        "the active file says which group the user is in"
+    );
     assert!(state.editor_focused, "a file means the editor has focus");
     assert!(state.agents.is_empty());
     assert!(!state.paused);
@@ -143,6 +148,7 @@ fn closing_the_current_environment_clears_the_workspace() {
     state.apply(&Event::EnvironmentClosed(environment()), at(30));
     assert_eq!(state.environment, None);
     assert_eq!(state.active_file, None);
+    assert_eq!(state.current_group, None, "the group went with it");
     assert!(!state.editor_focused);
     assert_eq!(state.cursor, None);
 }
@@ -284,6 +290,135 @@ fn a_finished_agent_stays_idle_with_its_harness() {
             updated_at: at(20),
         }),
         "finished agents stay, they are just not active"
+    );
+}
+
+/// Two groups (api and its nested web) with no file open and no activity yet.
+fn context_without_a_file() -> WorkspaceContext {
+    let mut context = context();
+    context.active_file = None;
+    context.cursor = None;
+    context
+}
+
+#[test]
+fn an_agent_chat_makes_its_group_the_project_without_a_file() {
+    let mut state = State::new(SystemTime::UNIX_EPOCH);
+    state.load(&context_without_a_file(), at(10));
+    assert_eq!(state.active_group(), None, "two groups, no clue yet");
+
+    state.apply(&agent_started(Some("ClaudeCode")), at(20));
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api-web"),
+        "the agent's chat is where the user is, not the environment"
+    );
+}
+
+#[test]
+fn the_project_follows_the_user_across_groups() {
+    let mut state = State::new(SystemTime::UNIX_EPOCH);
+    state.load(&context(), at(10)); // a file in api-web
+    assert_eq!(state.current_group.as_deref(), Some("2"));
+
+    state.apply(
+        &Event::FileFocused(Some(PathBuf::from("/code/api/src/main.rs"))),
+        at(20),
+    );
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api")
+    );
+
+    // A background agent ending says nothing about where the user is.
+    state.apply(
+        &Event::AgentFinished {
+            terminal: "t-2".to_owned(),
+            group: Some("2".to_owned()),
+        },
+        at(30),
+    );
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api"),
+        "a finished agent never steals the project"
+    );
+
+    // Opening a chat in the other group moves the project there.
+    state.apply(
+        &Event::AgentWaiting {
+            terminal: "t-1".to_owned(),
+            group: Some("2".to_owned()),
+        },
+        at(40),
+    );
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api-web")
+    );
+
+    // Back to a file of the first group.
+    state.apply(
+        &Event::FileFocused(Some(PathBuf::from("/code/api/lib.rs"))),
+        at(50),
+    );
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api")
+    );
+
+    // A save also says where the user is.
+    state.apply(
+        &Event::FileSaved(PathBuf::from("/code/api/web/src/main.ts")),
+        at(60),
+    );
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api-web")
+    );
+}
+
+#[test]
+fn opening_a_session_moves_the_project_to_its_group() {
+    let mut state = State::new(SystemTime::UNIX_EPOCH);
+    state.load(&context(), at(10)); // a file in api-web
+    state.apply(
+        &Event::SessionOpened {
+            group: Some("1".to_owned()),
+        },
+        at(20),
+    );
+    assert_eq!(state.current_group.as_deref(), Some("1"));
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api")
+    );
+    assert_eq!(
+        state.last_activity,
+        at(10),
+        "a session is not workspace activity"
+    );
+
+    // Without a group id there is nothing to follow.
+    state.apply(&Event::SessionOpened { group: None }, at(30));
+    assert_eq!(state.current_group.as_deref(), Some("1"));
+}
+
+#[test]
+fn a_group_that_disappears_is_no_longer_current() {
+    let mut state = State::new(SystemTime::UNIX_EPOCH);
+    state.load(&context(), at(10)); // a file in api-web
+    assert_eq!(state.current_group.as_deref(), Some("2"));
+
+    state.apply(
+        &Event::GroupsChanged(vec![group("1", "api", "/code/api")]),
+        at(20),
+    );
+    assert_eq!(state.current_group, None);
+    assert_eq!(
+        state.active_group().map(|group| group.name.as_str()),
+        Some("api"),
+        "the only remaining group is unambiguous"
     );
 }
 

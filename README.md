@@ -47,7 +47,7 @@ The large image is the Krad ADE app asset. The small image is the language of th
 
 ## Features
 
-- **Project and branch.** The workspace group that holds the active file and its current branch, for example `api · main`. Without a group, the environment name.
+- **Project and branch.** The workspace group you are in (the one with your latest activity) and its current branch, for example `api · main`. Without a group, the environment name.
 - **File and language.** The active file name and an icon for its language.
 - **Cursor line.** Optional `:line` suffix, for example `main.rs:42`.
 - **Coding agents.** `2 agents working` or `1 agent waiting for input`. Waiting wins over working.
@@ -126,10 +126,12 @@ Two details worth knowing:
 What Discord shows depends on where you are:
 
 - **In the editor.** Details show the project and branch; state shows `file[:line]`, with agent counts appended when agents are active. The small icon is the language of the file.
-- **In an agent chat or terminal.** Krad ADE reports no active file when focus leaves the editor. The extension keeps the last file name, so the presence does not flicker, and while an agent is active the small icon switches to the agent that needs you most: waiting first, then the most recently updated. A lone agent's tooltip reads for example `Claude Code working`.
+- **In an agent chat or terminal.** Krad ADE reports no active file when focus leaves the editor. The extension keeps the last file name while it belongs to the group you are in, so the presence does not flicker, and while an agent is active the small icon switches to the agent that needs you most: waiting first, then the most recently updated. A lone agent's tooltip reads for example `Claude Code working`.
 - **No file open.** The last saved file appears as `Saved main.rs`, or the agent counts fill the line on their own.
 - **Idle.** After `idle-minutes` without activity, and only while no agent is working or waiting, the state line becomes `Idle` and the icon changes. Any activity restores the presence at once.
 - **Paused.** The activity is cleared from Discord until you resume.
+
+Krad ADE does not expose the active group, so the project is the last group where you did something: focus or save a file, start an agent or have one ask you for input, or open a session (an agent chat). A background agent finishing does not move it, and a file from another group is not shown under the project you are in.
 
 <table>
   <tr>
@@ -162,7 +164,7 @@ Reconnection also happens on its own: the extension retries with exponential bac
 | Key | Label in Krad ADE | Default | Effect |
 | --- | --- | --- | --- |
 | `client-id` | Discord Client ID | empty | Application ID of your own Discord app. Empty uses the official Krad ADE app (`1569775639412613150`). |
-| `show-project` | Show the project | on | Show the group that holds the active file, or the environment name when no group does. Off hides group, environment and branch names, and the repository button. |
+| `show-project` | Show the project | on | Show the group you are in, or the environment name when no group matches. Off hides group, environment and branch names, and the repository button. |
 | `show-file` | Show the active file | on | Show the active file, or the last saved one when nothing is open. Off hides file names and the language icon. |
 | `show-line` | Show the cursor line | off | Append `:line` to the file. Krad ADE reports the cursor only for the file open when the extension started. Requires `show-file`. |
 | `show-branch` | Show the Git branch | on | Append the project's branch, for example `api · main`. Requires `show-project`. |
@@ -224,6 +226,9 @@ The extension has no icon for that extension. It falls back to `file`.
 
 **The file name stays after switching to a terminal.**
 Krad ADE reports no active file when focus leaves the editor, and the last one is kept to avoid flicker. This is expected. The idle timeout retires it, and active agents take over the icon.
+
+**The project is not the one I am in.**
+Krad ADE exposes no active group, so the extension uses the last group with your activity: a file, a save, an agent starting or asking for input, or a session. Focus or save a file in the right group to switch back; a file kept from another group is never shown under it.
 
 **The presence says `Idle` while an agent runs.**
 The agent belongs to a group in `ignored-groups`, or agent events are unavailable. Check `ignored-groups` and the Krad ADE version.

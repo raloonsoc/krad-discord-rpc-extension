@@ -75,7 +75,9 @@ pub(crate) fn app_event(params: &AppEventParams) -> Option<Event> {
             group: params.group.clone(),
         },
         AppEvent::GitChanged => Event::GitChanged,
-        AppEvent::SessionOpened { .. } => Event::SessionOpened,
+        AppEvent::SessionOpened { .. } => Event::SessionOpened {
+            group: params.group.clone(),
+        },
         AppEvent::SessionClosed { .. } => Event::SessionClosed,
         _ => return None,
     })
@@ -205,7 +207,9 @@ mod tests {
             app_event(&params(AppEvent::SessionOpened {
                 session: "s-1".to_owned(),
             })),
-            Some(Event::SessionOpened)
+            Some(Event::SessionOpened {
+                group: Some("1".to_owned()),
+            })
         );
         assert_eq!(
             app_event(&params(AppEvent::SessionClosed {

@@ -1,7 +1,7 @@
 //! Tests for the parent module.
 
 use super::*;
-use crate::domain::event::{CursorPosition, Environment, Group};
+use crate::domain::event::{CursorPosition, Environment, Event, Group};
 use crate::domain::presence::buttons::{KRAD_BUTTON_LABEL, MAX_BUTTONS, REPO_BUTTON_LABEL};
 use crate::domain::presence::icons::{FALLBACK_IMAGE, ICON_BASE_URL};
 use crate::domain::presence::text::MAX_TEXT_CHARS;
@@ -30,6 +30,14 @@ fn state() -> State {
 
 fn at(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
+fn web_group() -> Group {
+    Group {
+        id: "2".to_owned(),
+        name: "web".to_owned(),
+        root: PathBuf::from("/code/web"),
+    }
 }
 
 #[test]
@@ -118,6 +126,106 @@ fn the_cursor_line_appears_only_when_asked_for() {
             .state,
         "main.rs"
     );
+}
+
+#[test]
+fn a_file_from_another_group_is_not_shown_when_the_chat_moves() {
+    let mut state = state();
+    state.groups.push(web_group());
+    state.apply(&Event::FileFocused(None), at(10));
+    state.apply(
+        &Event::AgentStarted {
+            terminal: "t-1".to_owned(),
+            harness: Some("ClaudeCode".to_owned()),
+            group: Some("2".to_owned()),
+        },
+        at(20),
+    );
+    let presence = view(&state, &Settings::default(), at(20)).expect("presence");
+    assert_eq!(presence.details, "web");
+    assert_eq!(
+        presence.state, "1 agent working",
+        "the file of the previous group does not follow the user"
+    );
+    assert_eq!(
+        presence.small_image,
+        Some(icon_url("claude")),
+        "no language icon of the other group's file"
+    );
+}
+
+#[test]
+fn the_last_saved_file_only_fills_the_gap_in_its_group() {
+    let mut state = state();
+    state.groups.push(web_group());
+    state.apply(
+        &Event::FileSaved(PathBuf::from("/code/api/src/lib.rs")),
+        at(10),
+    );
+    state.apply(
+        &Event::SessionOpened {
+            group: Some("2".to_owned()),
+        },
+        at(20),
+    );
+    let presence = view(&state, &Settings::default(), at(20)).expect("presence");
+    assert_eq!(presence.details, "web");
+    assert_eq!(presence.state, "Idle", "the save belongs to api, not web");
+    assert_eq!(presence.small_image, Some(icon_url(IDLE_IMAGE)));
+
+    // Back in its own group it shows again.
+    state.active_file = None;
+    state.cursor = None;
+    state.apply(
+        &Event::SessionOpened {
+            group: Some("1".to_owned()),
+        },
+        at(30),
+    );
+    assert_eq!(
+        view(&state, &Settings::default(), at(30))
+            .expect("presence")
+            .state,
+        "Saved lib.rs"
+    );
+}
+
+#[test]
+fn an_ignored_group_that_the_chat_moves_to_hides_the_presence() {
+    let mut state = state();
+    state.groups.push(Group {
+        id: "2".to_owned(),
+        name: "secret".to_owned(),
+        root: PathBuf::from("/code/secret"),
+    });
+    state.apply(
+        &Event::AgentWaiting {
+            terminal: "t-1".to_owned(),
+            group: Some("2".to_owned()),
+        },
+        at(10),
+    );
+    let settings = Settings {
+        ignored_groups: vec!["secret".to_owned()],
+        ..Settings::default()
+    };
+    assert_eq!(view(&state, &settings, at(10)), None);
+}
+
+#[test]
+fn the_branch_follows_the_group_that_the_chat_moves_to() {
+    let mut state = state();
+    state.branch = Some("main".to_owned());
+    state.groups.push(web_group());
+    state.apply(
+        &Event::AgentWaiting {
+            terminal: "t-1".to_owned(),
+            group: Some("2".to_owned()),
+        },
+        at(10),
+    );
+    let presence = view(&state, &Settings::default(), at(10)).expect("presence");
+    assert_eq!(presence.details, "web · main");
 }
 
 #[test]

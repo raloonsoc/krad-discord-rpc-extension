@@ -10,6 +10,7 @@ use crate::domain::event::Group;
 use crate::domain::settings::Settings;
 use crate::domain::workspace::State;
 use icons::{harness_icon, icon_url, language_icon, IDLE_IMAGE, LARGE_IMAGE};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use text::{agent_line, file_label, single_harness_text, truncate};
 
@@ -46,7 +47,7 @@ pub(crate) fn view(state: &State, settings: &Settings, now: SystemTime) -> Optio
 
     let agents = agent_summary(state, settings);
     let idle = is_idle(state, settings, &agents, now);
-    let (state_line, icon) = state_line(state, settings, &agents, idle);
+    let (state_line, icon) = state_line(state, settings, &agents, idle, group);
     let small = small_icon(state, settings, &agents, idle, icon);
 
     Some(PresenceView {
@@ -120,16 +121,23 @@ fn large_text(state: &State, settings: &Settings) -> String {
     }
 }
 
-/// The state line and the icon that goes with it.
+/// The state line and the icon that goes with it. Only a file that belongs to
+/// the active group is shown: one kept from another group would contradict the
+/// project next to it.
 fn state_line(
     state: &State,
     settings: &Settings,
     agents: &AgentSummary,
     idle: bool,
+    group: Option<&Group>,
 ) -> (String, Option<(&'static str, &'static str)>) {
+    let file = state
+        .active_file
+        .as_deref()
+        .filter(|path| in_active_group(group, path));
     if idle {
         (IDLE.to_owned(), Some((IDLE_IMAGE, IDLE)))
-    } else if let Some(path) = state.active_file.as_deref().filter(|_| settings.show_file) {
+    } else if let Some(path) = file.filter(|_| settings.show_file) {
         let mut line = file_label(path, state.cursor, settings.show_line);
         if settings.show_agents {
             if let Some(agents) = agent_line(agents) {
@@ -139,10 +147,19 @@ fn state_line(
         }
         (line, Some(language_icon(path)))
     } else if settings.show_agents {
-        agent_line(agents).map_or_else(|| saved_or_idle(state, settings), |agents| (agents, None))
+        agent_line(agents).map_or_else(
+            || saved_or_idle(state, settings, group),
+            |agents| (agents, None),
+        )
     } else {
-        saved_or_idle(state, settings)
+        saved_or_idle(state, settings, group)
     }
+}
+
+/// Whether `path` belongs to the group the presence is following. With no
+/// group there is nothing to contradict, so the file still shows.
+fn in_active_group(group: Option<&Group>, path: &Path) -> bool {
+    group.is_none_or(|group| path.starts_with(&group.root))
 }
 
 /// The small image and its tooltip.
@@ -197,13 +214,19 @@ fn agent_icon(agent: &AgentSnapshot) -> (&'static str, String) {
     (asset, format!("{name} {doing}"))
 }
 
-/// The last saved file fills the gap when no file is open, or plain idle.
+/// The last saved file fills the gap when no file is open, or plain idle. A
+/// save from another group than the active one is not shown.
 fn saved_or_idle(
     state: &State,
     settings: &Settings,
+    group: Option<&Group>,
 ) -> (String, Option<(&'static str, &'static str)>) {
     if settings.show_file {
-        if let Some(path) = state.last_saved.as_deref() {
+        if let Some(path) = state
+            .last_saved
+            .as_deref()
+            .filter(|path| in_active_group(group, path))
+        {
             return (format!("Saved {}", file_label(path, None, false)), None);
         }
     }
